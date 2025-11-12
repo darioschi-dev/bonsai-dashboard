@@ -1,0 +1,31 @@
+{
+  "name": "bonsai-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"tsx watch src/server.ts\" \"vite\"",
+    "build": "vite build && tsc",
+    "start": "NODE_ENV=production node dist/server.js"
+  },
+  "dependencies": {
+    "chart.js": "^4.5.1",
+    "dotenv": "^17.2.3",
+    "express": "^4.19.2",
+    "mqtt": "^5.4.0",
+    "multer": "^2.0.2",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^20.11.30",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.3.2"
+  }
+}

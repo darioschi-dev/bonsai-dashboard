@@ -1,0 +1,35 @@
+body {
+    background: #111;
+    color: #fff;
+    font-family: 'Inter', sans-serif;
+    margin: 0;
+    padding: 1rem;
+    text-align: center;
+}
+
+h1 {
+    margin-bottom: 10px;
+}
+
+.status-section {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    margin: 20px auto;
+    max-width: 900px;
+}
+
+button {
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.btn-on {
+    background: #2ecc71;
+}
+
+.btn-off {
+    background: #e74c3c;
+}

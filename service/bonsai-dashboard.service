@@ -1,0 +1,33 @@
+[Unit]
+Description=Bonsai Dashboard (Backend + OTA + MQTT)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+# Directory del backend
+WorkingDirectory=/home/pi/bonsai-dashboard/server
+
+# Comando di avvio
+ExecStart=/usr/bin/node /home/pi/bonsai-dashboard/server/main.js
+
+# Ambiente di produzione
+Environment=NODE_ENV=production
+Environment=MQTT_URL=mqtt://localhost:1883
+
+# Rilancia automaticamente in caso di crash
+Restart=always
+RestartSec=5
+
+# Utente con cui gira
+User=pi
+Group=pi
+
+# Log su journald (consultabili con journalctl)
+StandardOutput=append:/home/pi/bonsai-dashboard/server/logs/output.log
+StandardError=append:/home/pi/bonsai-dashboard/server/logs/error.log
+
+# Limita il consumo di memoria se vuoi (opzionale)
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target
