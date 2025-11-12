@@ -1,0 +1,33 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+# Vite / Build
+dist/
+dist-frontend/
+*.local
+
+# Logs
+logs/
+*.log
+pm2.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Uploads
+uploads/firmware/*
+uploads/tmp/*
