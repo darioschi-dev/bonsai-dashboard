@@ -7,6 +7,7 @@ import fsp from "fs/promises";
 import crypto from "crypto";
 import mqtt from "mqtt";
 import { fileURLToPath } from "url";
+import db from "./db";
 
 // --- ENVIRONMENT ------------------------------------------------------------
 
@@ -27,7 +28,35 @@ const UPDATE_HOST = (process.env.UPDATE_HOST || "bonsai-iot-update.darioschiavan
 
 const mqttClient = mqtt.connect(MQTT_URL);
 mqttClient.on("connect", () => console.log("📡 MQTT connected"));
-mqttClient.on("message", (topic, msg) => console.log(`📨 ${topic}: ${msg.toString()}`));
+mqttClient.on('message', (topic, payload) => {
+    try {
+        const match = topic.match(/^bonsai\/([^/]+)\/data$/);
+        if (!match) return;
+
+        const deviceId = match[1];
+        const data = JSON.parse(payload.toString());
+
+        const stmt = db.prepare(`
+            INSERT INTO device_data (device_id, humidity, temperature, battery, rssi, firmware, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        stmt.run(
+            deviceId,
+            data.humidity ?? null,
+            data.temperature ?? null,
+            data.battery ?? null,
+            data.rssi ?? null,
+            data.firmware ?? null,
+            Date.now()
+        );
+
+        console.log('[DB] Inserito nuovo dato da', deviceId);
+
+    } catch (e) {
+        console.error('[DB] Errore parsing MQTT:', e);
+    }
+});
 
 const publishRetained = async (topic: string, payload: string) => {
     mqttClient.publish(topic, payload, { retain: true });
@@ -236,6 +265,23 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
         return res.status(400).json({ error: "MulterError", code: err.code });
     res.status(500).json({ error: "Errore interno", details: (err as Error)?.message });
 });
+
+// --- DATABASE COLLECTOR ----------------------------------------------------
+
+app.get("/api/history/:deviceId", (req, res) => {
+    const { deviceId } = req.params;
+
+    const stmt = db.prepare(`
+        SELECT *
+        FROM device_data
+        WHERE device_id = ?
+        ORDER BY timestamp DESC
+        LIMIT 200
+    `);
+
+    res.json(stmt.all(deviceId));
+});
+
 
 // --- STARTUP ----------------------------------------------------------------
 

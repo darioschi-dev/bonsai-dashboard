@@ -35,6 +35,7 @@
           @save="(cfg) => activeDevice && saveConfig(activeDevice, cfg)"
       />
       <FirmwareUploader />
+      <HistorySection :device-id="activeDevice!" />
     </div>
 
     <ModalConfirm
