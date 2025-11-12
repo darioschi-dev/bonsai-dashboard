@@ -7,7 +7,7 @@ import fsp from "fs/promises";
 import crypto from "crypto";
 import mqtt from "mqtt";
 import { fileURLToPath } from "url";
-import db from "./db";
+import db from './db.js'
 
 // --- ENVIRONMENT ------------------------------------------------------------
 
