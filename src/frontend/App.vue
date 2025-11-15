@@ -1,5 +1,6 @@
 <template>
   <div class="app">
+    <!-- HEADER SEMPRE VISIBILE -->
     <DashboardHeader
         :online="Object.keys(devices).length > 0"
         :active-id="activeDevice"
@@ -8,7 +9,8 @@
         @select-device="setActiveDevice"
     />
 
-    <div v-if="!activeDevice" class="empty-state">
+    <!-- MESSAGGIO INFORMATIVO, NON BLOCCA PIÙ LA UI -->
+    <div v-if="Object.keys(devices).length === 0" class="empty-state">
       <p>Nessun dispositivo connesso.</p>
       <p class="hint">
         In attesa di dati MQTT dal topic
@@ -16,12 +18,11 @@
       </p>
     </div>
 
-    <div v-else class="device-block">
-      <h2 :style="{ color: getColor(activeDevice) }">
-        <i class="fas fa-microchip"></i> {{ activeDevice }}
-      </h2>
+    <!-- DASHBOARD SEMPRE VISIBILE -->
+    <div class="device-block">
 
-      <div class="status-section">
+      <!-- GRID DELLE METRICHE SEMPRE VISIBILE -->
+      <div class="status-grid">
         <DashboardCard icon="tint" label="Umidità" :value="fmt(device.humidity)" />
         <DashboardCard icon="battery-half" label="Batteria" :value="fmt(device.battery)" />
         <DashboardCard icon="temperature-low" label="Temperatura" :value="fmt(device.temperature)" />
@@ -29,13 +30,29 @@
         <DashboardCard icon="clock" label="Ultimo messaggio" :value="device.lastSeen ?? '--'" />
         <DashboardCard icon="microchip" label="Firmware" :value="device.firmware ?? '--'" />
       </div>
+
+      <!-- TITOLO ***
+       VA SOTTO IL GRID *** -->
+      <h2 v-if="activeDevice" :style="{ color: getColor(activeDevice) }">
+        <i class="fas fa-microchip"></i> {{ activeDevice }}
+      </h2>
+
+      <h2 v-else>
+        <i class="fas fa-microchip"></i> Nessun dispositivo selezionato
+      </h2>
+
+      <!-- GRAFICI -->
       <HumidityChart :humidity="device.humidity ?? 0" />
+      <HistorySection v-if="activeDevice" :device-id="activeDevice" />
+
       <DeviceConfig
-          :device-id="activeDevice!"
-          @save="(cfg) => activeDevice && saveConfig(activeDevice, cfg)"
+          v-if="activeDevice"
+          :device-id="activeDevice"
+          @save="(cfg) => saveConfig(activeDevice!, cfg)"
       />
+
       <FirmwareUploader />
-      <HistorySection :device-id="activeDevice!" />
+
     </div>
 
     <ModalConfirm
@@ -53,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import DashboardHeader from './components/DashboardHeader.vue'
 import DashboardCard from './components/DashboardCard.vue'
 import HumidityChart from './components/HumidityChart.vue'
@@ -61,19 +78,11 @@ import DeviceConfig from './components/DeviceConfig.vue'
 import FirmwareUploader from './components/FirmwareUploader.vue'
 import ModalConfirm from './components/ModalConfirm.vue'
 import ModalAuth from './components/ModalAuth.vue'
+import HistorySection from './components/HistorySection.vue'
 import { mqttConnect } from './utils/mqttClient'
+import { devicesStore } from "./store/devicesStore"
 
-interface DeviceData {
-  humidity?: number
-  temperature?: number
-  battery?: number
-  rssi?: number
-  firmware?: string
-  lastSeen?: string
-  lastUpdate?: number
-}
-
-const devices = reactive<Record<string, DeviceData>>({})
+const devices = devicesStore
 const activeDevice = ref<string | null>(null)
 const showConfirm = ref(false)
 const showAuth = ref(false)
@@ -105,11 +114,13 @@ async function saveConfig(id: string, cfg: any) {
 async function confirmSave() {
   if (!pendingConfig.value) return
   const { id, cfg } = pendingConfig.value
+
   await fetch(`/api/config/${id}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
   })
+
   showConfirm.value = false
   pendingConfig.value = null
 }
@@ -138,6 +149,7 @@ onMounted(async () => {
         const data = JSON.parse(message)
 
         devices[id] = {
+          ...devices[id],
           humidity: data.humidity,
           temperature: data.temperature,
           battery: data.battery,
@@ -147,14 +159,23 @@ onMounted(async () => {
           lastUpdate: Date.now(),
         }
 
-        if (!activeDevice.value) {
-          activeDevice.value = id
-        }
+        if (!activeDevice.value) activeDevice.value = id
       }
   )
 
-  mqtt.subscribe("bonsai/+/data")
-  console.log("[MQTT] Sottoscritto a bonsai/+/data")
+  mqtt.subscribe("bonsai/#") // Più permissivo durante sviluppo
+  console.log("[MQTT] Sottoscritto a bonsai/#")
+
+  // Stato online / offline
+  setInterval(() => {
+    const now = Date.now()
+    for (const id in devices) {
+      devices[id].status =
+          devices[id].lastUpdate && now - devices[id].lastUpdate > 60000
+              ? "offline"
+              : "online"
+    }
+  }, 5000)
 })
 </script>
 
@@ -185,18 +206,10 @@ h2 {
   font-size: 1.3rem;
 }
 
-.status-section {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
-  margin: 20px auto;
-  max-width: 900px;
-}
-
 .empty-state {
   color: #ccc;
   text-align: center;
-  margin-top: 60px;
+  margin-top: 40px;
 }
 
 .empty-state code {
@@ -205,4 +218,28 @@ h2 {
   border-radius: 4px;
   color: #6cf;
 }
+
+.status-grid {
+  display: grid;
+  gap: 15px;
+  margin: 24px auto;
+  max-width: 900px;
+
+  /* 3 colonne perfettamente simmetriche */
+  grid-template-columns: repeat(3, 1fr);
+}
+
+/* responsive mobile/tablet */
+@media (max-width: 800px) {
+  .status-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 500px) {
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 </style>
