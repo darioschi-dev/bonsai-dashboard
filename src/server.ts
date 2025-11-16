@@ -8,6 +8,7 @@ import crypto from "crypto";
 import mqtt from "mqtt";
 import { fileURLToPath } from "url";
 import db from './db.js'
+import {ServerConfig} from "./types/ServerConfig";
 
 // --- ENVIRONMENT ------------------------------------------------------------
 
@@ -180,7 +181,28 @@ app.post(
             await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
 
             await publishRetained("bonsai/ota/available", JSON.stringify(manifest));
+            try {
+                const cfgPath = path.join(uploadsDir, "config.json");
+                let cfg: ServerConfig = {};
 
+                try {
+                    cfg = JSON.parse(await fsp.readFile(cfgPath, "utf-8"));
+                } catch {
+                    cfg = {};
+                }
+
+                cfg.latest_firmware = version;
+                cfg.latest_firmware_url = url;
+                cfg.latest_firmware_sha256 = sha256;
+                cfg.latest_firmware_size = stat.size;
+                cfg.latest_firmware_updated_at = new Date().toISOString();
+
+                await fsp.writeFile(cfgPath, JSON.stringify(cfg, null, 2), "utf-8");
+
+                console.log("[OTA] Aggiornato config.json con info firmware");
+            } catch (e) {
+                console.error("[OTA] ❌ Errore aggiornamento config.json:", e);
+            }
             console.log(`[OTA] ✅ Upload completato: ${version}`);
             res.json({ success: true, manifest });
         } catch (err: any) {
@@ -191,6 +213,26 @@ app.post(
         }
     }
 );
+
+/** Config OTA (ultima versione disponibile) */
+app.get("/api/ota/config", async (_req, res) => {
+    try {
+        const cfgPath = path.join(uploadsDir, "config.json");
+        const data = JSON.parse(await fsp.readFile(cfgPath, "utf-8"));
+        res.json(data);
+    } catch {
+        res.status(404).json({ error: "config.json non trovato" });
+    }
+});
+
+/** Forza un update su un device specifico */
+app.post("/api/ota/update/:deviceId", (req, res) => {
+    const { deviceId } = req.params;
+    mqttClient.publish(`bonsai/${deviceId}/ota/start`, "1");
+
+    console.log(`[OTA] Update richiesto a ${deviceId}`);
+    res.json({ ok: true, deviceId });
+});
 
 // --- API PER-DEVICE ---------------------------------------------------------
 

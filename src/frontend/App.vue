@@ -5,8 +5,9 @@
         :online="Object.keys(devices).length > 0"
         :active-id="activeDevice"
         :device-ids="Object.keys(devices)"
-        @toggle-pump="(s) => togglePump(activeDevice, s)"
-        @select-device="setActiveDevice"
+        :devices="devices"
+    @toggle-pump="(s) => togglePump(activeDevice, s)"
+    @select-device="setActiveDevice"
     />
 
     <!-- MESSAGGIO INFORMATIVO, NON BLOCCA PIÙ LA UI -->
@@ -51,6 +52,17 @@
           @save="(cfg) => saveConfig(activeDevice!, cfg)"
       />
 
+      <FirmwareActions v-if="activeDevice" :device-id="activeDevice" />
+
+      <div
+          v-if="firmwareUpdateAvailable"
+          class="ota-banner"
+      >
+        <i class="fas fa-exclamation-triangle"></i>
+        Nuovo firmware disponibile:
+        <strong>{{ serverConfig.latest_firmware }}</strong>
+      </div>
+
       <FirmwareUploader />
 
     </div>
@@ -81,6 +93,8 @@ import ModalAuth from './components/ModalAuth.vue'
 import HistorySection from './components/HistorySection.vue'
 import { mqttConnect } from './utils/mqttClient'
 import { devicesStore } from "./store/devicesStore"
+import { serverConfig } from "./store/serverConfigStore"
+import FirmwareActions from "./components/FirmwareActions.vue";
 
 const devices = devicesStore
 const activeDevice = ref<string | null>(null)
@@ -91,6 +105,15 @@ const pendingConfig = ref<{ id: string; cfg: any } | null>(null)
 const device = computed(() =>
     activeDevice.value ? devices[activeDevice.value] ?? {} : {}
 )
+
+const firmwareUpdateAvailable = computed(() => {
+  if (!activeDevice.value) return false
+  const devFw = devices[activeDevice.value]?.firmware
+  const latest = serverConfig.latest_firmware
+  if (!devFw || !latest) return false
+
+  return devFw.trim() !== latest.trim()
+})
 
 function fmt(value?: number) {
   return value != null ? `${value}` : '--'
@@ -176,6 +199,15 @@ onMounted(async () => {
               : "online"
     }
   }, 5000)
+
+  try {
+    const res = await fetch("/api/ota/config");
+    Object.assign(serverConfig, await res.json());
+    console.log("[OTA] Config ricevuta:", serverConfig);
+  } catch (e) {
+    console.warn("Nessuna OTA config disponibile");
+  }
+
 })
 </script>
 
@@ -240,6 +272,16 @@ h2 {
   .status-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.ota-banner {
+  background: #f39c12;
+  color: #111;
+  padding: 10px;
+  border-radius: 8px;
+  margin: 10px auto;
+  max-width: 500px;
+  font-weight: 600;
 }
 
 </style>

@@ -17,6 +17,14 @@
           @click="$emit('select-device', id)"
       >
         <i class="fas fa-microchip"></i> {{ id }}
+
+        <span
+            v-if="devices[id]?.firmware && serverConfig.latest_firmware &&
+           devices[id].firmware.trim() !== serverConfig.latest_firmware.trim()"
+            class="fw-badge"
+        >
+    UPDATE
+  </span>
       </button>
     </div>
 
@@ -32,10 +40,13 @@
 </template>
 
 <script setup lang="ts">
+import { serverConfig } from "../store/serverConfigStore"
+
 defineProps<{
   online: boolean
   deviceIds: string[]
   activeId: string | null
+  devices: Record<string, any>
 }>()
 
 defineEmits<{
@@ -125,4 +136,15 @@ button {
 .btn-off {
   background-color: #e74c3c;
 }
+
+.fw-badge {
+  background: #e74c3c;
+  color: white;
+  margin-left: 6px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: bold;
+}
+
 </style>
