@@ -51,9 +51,8 @@
           :device-id="activeDevice"
           @save="(cfg) => saveConfig(activeDevice!, cfg)"
       />
-
+      <FirmwarePanel :device-id="activeDevice" />
       <FirmwareActions v-if="activeDevice" :device-id="activeDevice" />
-
       <div
           v-if="firmwareUpdateAvailable"
           class="ota-banner"
@@ -95,6 +94,7 @@ import { mqttConnect } from './utils/mqttClient'
 import { devicesStore } from "./store/devicesStore"
 import { serverConfig } from "./store/serverConfigStore"
 import FirmwareActions from "./components/FirmwareActions.vue";
+import FirmwarePanel from "./components/FirmwarePanel.vue";
 
 const devices = devicesStore
 const activeDevice = ref<string | null>(null)
