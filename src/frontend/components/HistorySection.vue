@@ -21,7 +21,7 @@
       </thead>
       <tbody>
       <tr v-for="row in rows" :key="row.id">
-        <td>{{ formatTime(row.timestamp) }}</td>
+        <td>{{ formatTime(row.created_at) }}</td>
         <td>{{ row.humidity }}</td>
         <td>{{ row.temperature }}</td>
         <td>{{ row.battery }}</td>
@@ -33,20 +33,13 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-
-interface Row {
-  id: number
-  humidity: number
-  temperature: number
-  battery: number
-  timestamp: number
-}
+import {HistoryRow} from "../store/devicesStore";
 
 const props = defineProps<{
   deviceId: string
 }>()
 
-const rows = ref<Row[]>([])
+const rows = ref<HistoryRow[]>([]);
 const loading = ref(true)
 
 async function load() {
@@ -58,9 +51,10 @@ async function load() {
 
 onMounted(load)
 
-function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString()
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleTimeString();
 }
+
 </script>
 
 <style scoped>

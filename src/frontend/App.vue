@@ -125,8 +125,9 @@ function getColor(id: string) {
   return colors[index % colors.length]
 }
 
-function setActiveDevice(id: string) {
-  activeDevice.value = id
+async function setActiveDevice(id: string) {
+  activeDevice.value = id;
+  await loadDeviceData(id);
 }
 
 async function saveConfig(id: string, cfg: any) {
@@ -158,7 +159,44 @@ function togglePump(id: string | null, state: 'on' | 'off') {
   fetch(`/api/pump/${id}/${state}`, { method: 'POST' })
 }
 
+async function loadDeviceData(id: string) {
+  const latest = await fetch(`/api/device/${id}/latest`).then(r => r.json());
+  const history = await fetch(`/api/history/${id}`).then(r => r.json());
+
+  devices[id] = {
+    ...devices[id],
+    humidity: latest?.humidity ?? null,
+    temperature: latest?.temperature ?? null,
+    battery: latest?.battery ?? null,
+    rssi: latest?.rssi ?? null,
+    firmware: latest?.firmware ?? null,
+    lastSeen: latest?.created_at
+        ? new Date(latest.created_at).toLocaleTimeString()
+        : "--",
+    lastUpdate: latest ? new Date(latest.created_at).getTime() : null,
+    history,
+  };
+
+  console.log("[INIT] Dati caricati per", id, devices[id]);
+}
+
 onMounted(async () => {
+  console.log("[INIT] Caricamento lista dispositivi dal DB...");
+
+  // 1) Carica lista device dal backend
+  const devList = await fetch("/api/devices").then(r => r.json());
+
+  for (const id of devList) {
+    devices[id] = {};
+  }
+
+  // se esiste almeno 1 device, selezionalo
+  if (devList.length > 0) {
+    activeDevice.value = devList[0];
+    await loadDeviceData(devList[0]);
+  }
+
+  // 2) Connessione MQTT (opzionale, realtime)
   console.log('[MQTT] Connessione al broker...')
 
   const mqtt = await mqttConnect(
@@ -182,14 +220,15 @@ onMounted(async () => {
           lastUpdate: Date.now(),
         }
 
+        // set attivo se non selezionato
         if (!activeDevice.value) activeDevice.value = id
       }
   )
 
-  mqtt.subscribe("bonsai/#") // Più permissivo durante sviluppo
+  mqtt.subscribe("bonsai/#")
   console.log("[MQTT] Sottoscritto a bonsai/#")
 
-  // Stato online / offline
+  // 3) Stato online/offline
   setInterval(() => {
     const now = Date.now()
     for (const id in devices) {
@@ -200,6 +239,7 @@ onMounted(async () => {
     }
   }, 5000)
 
+  // 4) OTA config
   try {
     const res = await fetch("/api/ota/config");
     Object.assign(serverConfig, await res.json());

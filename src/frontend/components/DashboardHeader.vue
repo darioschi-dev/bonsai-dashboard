@@ -41,13 +41,14 @@
 
 <script setup lang="ts">
 import { serverConfig } from "../store/serverConfigStore"
+import {DeviceInfo} from "../store/devicesStore";
 
 defineProps<{
-  online: boolean
-  deviceIds: string[]
-  activeId: string | null
-  devices: Record<string, any>
-}>()
+  online: boolean;
+  deviceIds: string[];
+  activeId: string | null;
+  devices: Record<string, DeviceInfo>;
+}>();
 
 defineEmits<{
   (e: 'toggle-pump', state: 'on' | 'off'): void

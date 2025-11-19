@@ -9,6 +9,7 @@ import mqtt from "mqtt";
 import { fileURLToPath } from "url";
 import db from './db.js'
 import {ServerConfig} from "./types/ServerConfig";
+import {DeviceLatestResponse, DevicesListResponse} from "./types/DeviceData";
 
 // --- ENVIRONMENT ------------------------------------------------------------
 
@@ -38,7 +39,7 @@ mqttClient.on('message', (topic, payload) => {
         const data = JSON.parse(payload.toString());
 
         const stmt = db.prepare(`
-            INSERT INTO device_data (device_id, humidity, temperature, battery, rssi, firmware, timestamp)
+            INSERT INTO device_data (device_id, humidity, temperature, battery, rssi, firmware, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `);
 
@@ -49,7 +50,7 @@ mqttClient.on('message', (topic, payload) => {
             data.battery ?? null,
             data.rssi ?? null,
             data.firmware ?? null,
-            Date.now()
+            new Date().toISOString()
         );
 
         console.log('[DB] Inserito nuovo dato da', deviceId);
@@ -317,13 +318,39 @@ app.get("/api/history/:deviceId", (req, res) => {
         SELECT *
         FROM device_data
         WHERE device_id = ?
-        ORDER BY timestamp DESC
+        ORDER BY created_at DESC
         LIMIT 200
     `);
 
     res.json(stmt.all(deviceId));
 });
 
+app.get("/api/device/:deviceId/latest", (req, res) => {
+    const { deviceId } = req.params;
+
+    const stmt = db.prepare(`
+        SELECT *
+        FROM device_data
+        WHERE device_id = ?
+        ORDER BY created_at DESC
+            LIMIT 1
+    `);
+
+    const row = stmt.get(deviceId) as DeviceLatestResponse;
+    res.json(row);
+});
+
+app.get("/api/devices", (req, res) => {
+    const stmt = db.prepare(`
+        SELECT DISTINCT device_id
+        FROM device_data
+        ORDER BY device_id ASC
+    `);
+
+    const rows = stmt.all() as { device_id: string }[];
+
+    res.json(rows.map(r => r.device_id) as DevicesListResponse);
+});
 
 // --- STARTUP ----------------------------------------------------------------
 
