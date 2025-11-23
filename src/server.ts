@@ -13,6 +13,7 @@ import crypto from "crypto";
 import mqtt from "mqtt";
 import { fileURLToPath } from "url";
 import db from "./db.js";
+import {ServerConfig} from "./types/ServerConfig";
 
 // ----------------------------------------------------------------------------
 //  ENV
@@ -77,20 +78,11 @@ async function sha256File(filePath: string): Promise<string> {
     });
 }
 
-async function rebuildManifest(baseUrl: string) {
-    // Carica eventuale firmware esistente
-    let firmware = null;
-    try {
-        const raw = JSON.parse(await fsp.readFile(MANIFEST_PATH, "utf-8"));
-        firmware = raw.firmware ?? null;
-    } catch {
-        firmware = null;
-    }
-
-    // Carica config
+async function buildFullManifest(baseUrl: string) {
+    // ---- CONFIG ----
     let cfg: any = {};
     try {
-        cfg = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf-8"));
+        cfg = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf8"));
     } catch {
         cfg = { config_version: "000000000000" };
     }
@@ -98,24 +90,55 @@ async function rebuildManifest(baseUrl: string) {
     const configJson = JSON.stringify(cfg);
     const configSha = crypto.createHash("sha256").update(configJson).digest("hex");
 
-    const manifest = {
-        firmware: firmware ?? {
+    // ---- FIRMWARE ----
+    let firmwareSection = null;
+    const binPath = path.join(firmwareDir, "esp32.bin");
+
+    try {
+        const stat = await fsp.stat(binPath);
+        const sha = await sha256File(binPath);
+
+        firmwareSection = {
+            version: cfg.firmware_version ?? "v0.0.0",
+            url: `${baseUrl}/firmware/esp32.bin`,
+            sha256: sha,
+            size: stat.size,
+            created_at: new Date().toISOString(),
+        };
+    } catch {
+        firmwareSection = {
             version: "v0.0.0",
             url: `${baseUrl}/firmware/esp32.bin`,
             sha256: "",
             size: 0,
             created_at: new Date().toISOString(),
-        },
-        config: {
-            version: cfg.config_version ?? "000000000000",
-            url: `${baseUrl}/config/config.json`,
-            sha256: configSha,
-            size: Buffer.byteLength(configJson),
-            created_at: new Date().toISOString(),
-        },
+        };
+    }
+
+    // ---- CONFIG SECTION ----
+    const configSection = {
+        version: cfg.config_version ?? "000000000000",
+        url: `${baseUrl}/config/config.json`,
+        sha256: configSha,
+        size: Buffer.byteLength(configJson),
+        created_at: new Date().toISOString(),
+    };
+
+    // ---- SERVER SECTION ----
+    const serverSection = {
+        node: process.version,
+        timestamp: new Date().toISOString(),
+        pm_id: process.env.pm_id ?? null,
+    };
+
+    const manifest = {
+        server: serverSection,
+        firmware: firmwareSection,
+        config: configSection,
     };
 
     await fsp.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+
     return manifest;
 }
 
@@ -210,6 +233,54 @@ app.use((req, res, next) => {
 });
 
 // ----------------------------------------------------------------------------
+//   DEBUG – BUILD INFORMATION
+//
+// ----------------------------------------------------------------------------
+app.get("/debug/build", async (_req, res) => {
+    try {
+        // Versione Node
+        const nodeVersion = process.version;
+
+        // Tempo di avvio server (PM2)
+        const uptimeSec = process.uptime();
+
+        // Timestamp build (iniettato da Vite/TS durante build)
+        // Se vuoi un vero timestamp, sostituisco con uno generato in fase build.
+        const buildTs = process.env.BUILD_TIMESTAMP || "unknown";
+
+        // Leggi manifest (se esiste)
+        let manifest = null;
+        try {
+            const raw = await fsp.readFile(MANIFEST_PATH, "utf8");
+            manifest = JSON.parse(raw);
+        } catch (_) {
+            manifest = null;
+        }
+
+        // Informazioni PM2 (se disponibili)
+        const pm_id = process.env.pm_id || null;
+        const pm2_env = process.env.pm2_env || null;
+
+        res.json({
+            ok: true,
+            server: {
+                node: nodeVersion,
+                uptime_seconds: Math.round(uptimeSec),
+                pm_id,
+                pm2_env
+            },
+            build: {
+                timestamp: buildTs
+            },
+            manifest
+        });
+    } catch (err) {
+        console.error("DEBUG ERROR:", err);
+        res.status(500).json({ ok: false, error: "debug_failed" });
+    }
+});
+
+// ----------------------------------------------------------------------------
 //  OTA UPLOAD (FIRMWARE)
 // ----------------------------------------------------------------------------
 
@@ -265,32 +336,32 @@ app.post(
             if (version.length > 31)
                 return res.status(400).json({ error: "Version troppo lunga (max 31)" });
 
+            // --- Aggiorna config.json con la nuova versione firmware ---
+            try {
+                let cfg: ServerConfig = {};
+                try {
+                    cfg = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf8"));
+                } catch {}
+
+                cfg.firmware_version = version;
+
+                await fsp.writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+            } catch (err) {
+                console.error("❌ Errore aggiornando firmware_version in config:", err);
+            }
+
             // --- Atomic move & SHA -------------------------------------------
             const tmpAtomic = path.join(firmwareDir, ".esp32.bin.tmp");
             await fsp.rename(fw.path, tmpAtomic);
 
-            const sha256 = await sha256File(tmpAtomic);
-            const stat = await fsp.stat(tmpAtomic);
-
             const binPath = path.join(firmwareDir, "esp32.bin");
-            const manifestPath = path.join(firmwareDir, "manifest.json");
 
             await fsp.rename(tmpAtomic, binPath);
-
             // --- BASE URL -----------------------------------------------------
             const base = resolveBaseUrl(req);
-            const firmwareUrl = `${base}/firmware/esp32.bin`;
 
-            // --- MANIFEST COMPATIBILE CON L'ESP -------------------------------
-            const manifest = {
-                version,
-                url: firmwareUrl,
-                sha256,
-                size: stat.size,
-                created_at: new Date().toISOString()
-            };
-
-            await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+            // --- RICOSTRUISCI MANIFEST COMPLETO ---
+            const manifest = await buildFullManifest(base);
 
             // --- OTA ANNOUNCE --------------------------------------------------
             publishRetained("bonsai/ota/available", JSON.stringify(manifest));
@@ -336,12 +407,12 @@ app.post("/api/config", async (req, res) => {
 
         await fsp.writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2));
 
-        publishRetained(
-            "bonsai/config",
-            JSON.stringify(cfg)
-        );
+        publishRetained("bonsai/config", JSON.stringify(cfg));
 
-        console.log("⚙️ Config aggiornata → nuova manifest OTA generata");
+        const base = resolveBaseUrl(req);
+        await buildFullManifest(base);
+
+        console.log("⚙️ Config aggiornata → manifest OTA rigenerato");
         res.json({ ok: true, config_version: cfg.config_version });
     } catch (err) {
         console.error("❌ Errore aggiornamento config:", err);
@@ -367,10 +438,11 @@ app.post("/api/config/push", async (_req, res) => {
 app.post("/api/ota/announce", async (req, res) => {
     try {
         const base = resolveBaseUrl(req);
-        const manifest = await rebuildManifest(base);
+        const manifest = await buildFullManifest(base);
         publishRetained("bonsai/ota/available", JSON.stringify(manifest));
         res.json({ ok: true });
-    } catch {
+    } catch (err) {
+        console.error("❌ OTA announce error:", err);
         res.status(500).json({ error: "manifest_error" });
     }
 });
