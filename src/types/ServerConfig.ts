@@ -1,4 +1,6 @@
 export interface ServerConfig {
+    config_version?: string;
+
     latest_firmware?: string;
     latest_firmware_url?: string;
     latest_firmware_sha256?: string;

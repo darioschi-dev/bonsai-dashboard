@@ -1,3 +1,8 @@
+// ============================================================================
+//  Bonsai MQTT Dashboard – Server backend (OTA + MQTT + storage + config)
+//  VERSIONE FINALE, COMPLETA E COERENTE
+// ============================================================================
+
 import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import dotenv from "dotenv";
@@ -7,14 +12,15 @@ import fsp from "fs/promises";
 import crypto from "crypto";
 import mqtt from "mqtt";
 import { fileURLToPath } from "url";
-import db from './db.js'
-import {ServerConfig} from "./types/ServerConfig";
-import {DeviceLatestResponse, DevicesListResponse} from "./types/DeviceData";
+import db from "./db.js";
 
-// --- ENVIRONMENT ------------------------------------------------------------
+// ----------------------------------------------------------------------------
+//  ENV
+// ----------------------------------------------------------------------------
 
 dotenv.config({ path: ".env" });
-if (fs.existsSync(".env.local")) dotenv.config({ path: ".env.local", override: true });
+if (fs.existsSync(".env.local"))
+    dotenv.config({ path: ".env.local", override: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,11 +32,105 @@ const BASE_URL_ENV = process.env.BASE_URL || "";
 const OTA_TOKEN = process.env.OTA_TOKEN || "";
 const UPDATE_HOST = (process.env.UPDATE_HOST || "bonsai-iot-update.darioschiavano.it").toLowerCase();
 
-// --- MQTT -------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+//  DIRECTORIES (modello A)
+// ----------------------------------------------------------------------------
+
+const uploadsDir = path.resolve(__dirname, "..", "uploads");
+const firmwareDir = path.join(uploadsDir, "firmware");
+const configDir = path.join(uploadsDir, "config");
+const tmpDir = path.join(uploadsDir, "tmp");
+
+async function ensureDirectories() {
+    await fsp.mkdir(firmwareDir, { recursive: true });
+    await fsp.mkdir(configDir, { recursive: true });
+    await fsp.mkdir(tmpDir, { recursive: true });
+}
+
+const CONFIG_PATH = path.join(configDir, "config.json");
+const MANIFEST_PATH = path.join(firmwareDir, "manifest.json");
+
+// ----------------------------------------------------------------------------
+//  HELPERS
+// ----------------------------------------------------------------------------
+
+function resolveBaseUrl(req: Request): string {
+    if (BASE_URL_ENV) return BASE_URL_ENV.replace(/\/+$/, "");
+    const proto =
+        (req.headers["x-forwarded-proto"] as string) ||
+        req.protocol ||
+        "http";
+    const host =
+        ((req.headers["x-forwarded-host"] as string) ||
+            req.headers.host ||
+            "").split(",")[0].trim();
+    return `${proto}://${host}`;
+}
+
+async function sha256File(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash("sha256");
+        const stream = fs.createReadStream(filePath);
+        stream.on("data", (d) => hash.update(d));
+        stream.on("end", () => resolve(hash.digest("hex")));
+        stream.on("error", reject);
+    });
+}
+
+async function rebuildManifest(baseUrl: string) {
+    // Carica eventuale firmware esistente
+    let firmware = null;
+    try {
+        const raw = JSON.parse(await fsp.readFile(MANIFEST_PATH, "utf-8"));
+        firmware = raw.firmware ?? null;
+    } catch {
+        firmware = null;
+    }
+
+    // Carica config
+    let cfg: any = {};
+    try {
+        cfg = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf-8"));
+    } catch {
+        cfg = { config_version: "000000000000" };
+    }
+
+    const configJson = JSON.stringify(cfg);
+    const configSha = crypto.createHash("sha256").update(configJson).digest("hex");
+
+    const manifest = {
+        firmware: firmware ?? {
+            version: "v0.0.0",
+            url: `${baseUrl}/firmware/esp32.bin`,
+            sha256: "",
+            size: 0,
+            created_at: new Date().toISOString(),
+        },
+        config: {
+            version: cfg.config_version ?? "000000000000",
+            url: `${baseUrl}/config/config.json`,
+            sha256: configSha,
+            size: Buffer.byteLength(configJson),
+            created_at: new Date().toISOString(),
+        },
+    };
+
+    await fsp.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+    return manifest;
+}
+
+// ----------------------------------------------------------------------------
+//  MQTT
+// ----------------------------------------------------------------------------
 
 const mqttClient = mqtt.connect(MQTT_URL);
-mqttClient.on("connect", () => console.log("📡 MQTT connected"));
-mqttClient.on('message', (topic, payload) => {
+
+mqttClient.on("connect", () => {
+    console.log("📡 MQTT connected");
+    mqttClient.subscribe("bonsai/+/data");
+});
+
+mqttClient.on("message", (topic, payload) => {
     try {
         const match = topic.match(/^bonsai\/([^/]+)\/data$/);
         if (!match) return;
@@ -53,72 +153,65 @@ mqttClient.on('message', (topic, payload) => {
             new Date().toISOString()
         );
 
-        console.log('[DB] Inserito nuovo dato da', deviceId);
-
+        console.log("💾 [DB] Inserito nuovo dato da", deviceId);
     } catch (e) {
-        console.error('[DB] Errore parsing MQTT:', e);
+        console.error("[DB] Errore parsing MQTT:", e);
     }
 });
 
-const publishRetained = async (topic: string, payload: string) => {
+function publishRetained(topic: string, payload: string) {
     mqttClient.publish(topic, payload, { retain: true });
-};
+}
 
-// --- EXPRESS APP ------------------------------------------------------------
+// ----------------------------------------------------------------------------
+//  EXPRESS
+// ----------------------------------------------------------------------------
 
 const app = express();
 app.use(express.json());
 
-// --- DIRECTORIES ------------------------------------------------------------
+// ----------------------------------------------------------------------------
+//  STATIC PATHS
+// ----------------------------------------------------------------------------
 
-const uploadsDir = path.resolve(__dirname, "..", "uploads");
-const firmwareDir = path.join(uploadsDir, "firmware");
-const tmpDir = path.join(uploadsDir, "tmp");
+app.use(
+    "/firmware",
+    express.static(firmwareDir, {
+        setHeaders: (res, filePath) => {
+            if (filePath.endsWith("manifest.json"))
+                res.setHeader("Cache-Control", "no-store");
+            if (filePath.endsWith(".bin"))
+                res.setHeader("Cache-Control", "no-cache");
+        },
+    })
+);
 
-await fsp.mkdir(firmwareDir, { recursive: true });
-await fsp.mkdir(tmpDir, { recursive: true });
+app.use("/config", express.static(configDir));
 
-// --- HELPERS ----------------------------------------------------------------
-
-function resolveBaseUrl(req: Request): string {
-    if (BASE_URL_ENV) return BASE_URL_ENV.replace(/\/+$/, "");
-    const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "http";
-    const host = ((req.headers["x-forwarded-host"] as string) || req.headers.host || "").split(",")[0].trim();
-    return `${proto}://${host}`;
-}
-
-async function sha256File(filePath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const h = crypto.createHash("sha256");
-        const s = fs.createReadStream(filePath);
-        s.on("data", (d) => h.update(d));
-        s.on("end", () => resolve(h.digest("hex")));
-        s.on("error", reject);
-    });
-}
-
-// --- STATIC OTA FILES -------------------------------------------------------
-
-app.use("/firmware", express.static(firmwareDir, {
-    setHeaders: (res, filePath) => {
-        if (filePath.endsWith("manifest.json")) res.setHeader("Cache-Control", "no-store");
-        if (filePath.endsWith(".bin")) res.setHeader("Cache-Control", "no-cache");
-    },
-}));
-
-// limit access when host matches UPDATE_HOST
+// BLOCK routes if request comes from UPDATE_HOST
 app.use((req, res, next) => {
-    const rawHost = (req.headers["x-forwarded-host"] as string) || req.headers.host || "";
+    const rawHost =
+        (req.headers["x-forwarded-host"] as string) ||
+        req.headers.host ||
+        "";
     const host = rawHost.split(",")[0].trim().toLowerCase();
+
     if (host === UPDATE_HOST) {
-        if (req.path === "/upload-firmware" || req.path.startsWith("/firmware") || req.path === "/api/ota/announce")
-            return next();
-        return res.status(404).send("Not found");
+        const ok =
+            req.path === "/upload-firmware" ||
+            req.path.startsWith("/firmware") ||
+            req.path === "/api/ota/announce" ||
+            req.path.startsWith("/config");
+
+        if (!ok) return res.status(404).send("Not found");
     }
-    return next();
+
+    next();
 });
 
-// --- OTA UPLOAD -------------------------------------------------------------
+// ----------------------------------------------------------------------------
+//  OTA UPLOAD (FIRMWARE)
+// ----------------------------------------------------------------------------
 
 let uploading = false;
 
@@ -126,7 +219,10 @@ const upload = multer({
     dest: tmpDir,
     limits: { fileSize: 4 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
-        if (file.fieldname !== "firmware" && file.fieldname !== "version_file") {
+        if (
+            file.fieldname !== "firmware" &&
+            file.fieldname !== "version_file"
+        ) {
             return cb(new multer.MulterError("LIMIT_UNEXPECTED_FILE"));
         }
         cb(null, true);
@@ -141,73 +237,69 @@ app.post(
         uploading = true;
 
         try {
+            // --- Auth ---------------------------------------------------------
             if (OTA_TOKEN) {
                 const auth = (req.headers.authorization || "").trim();
                 if (!auth.startsWith("Bearer ") || auth.slice(7) !== OTA_TOKEN)
                     return res.status(401).json({ error: "Unauthorized" });
             }
 
+            // --- File firmware ------------------------------------------------
             const fw = (req.files as any)?.firmware?.[0];
             if (!fw) return res.status(400).json({ error: "File mancante (campo 'firmware')" });
 
-            // Estrai versione
+            // --- Version extraction -------------------------------------------
             let version = "";
             const versionFile = (req.files as any)?.version_file?.[0];
             if (versionFile) version = (await fsp.readFile(versionFile.path, "utf-8")).trim();
             if (!version) version = (req.body?.version || "").toString().trim();
 
-            // Validazione versione
+            // Validazione
             const reSemver = /^v\d+\.\d+\.\d+$/;
             const reTs = /^\d{12}$/;
             const reComb = /^v\d+\.\d+\.\d+\+\d{12}$/;
+
             if (!(reSemver.test(version) || reTs.test(version) || reComb.test(version)))
                 return res.status(400).json({ error: "Version non valida" });
 
             if (version.length > 31)
                 return res.status(400).json({ error: "Version troppo lunga (max 31)" });
 
-            // SHA e manifest
+            // --- Atomic move & SHA -------------------------------------------
             const tmpAtomic = path.join(firmwareDir, ".esp32.bin.tmp");
             await fsp.rename(fw.path, tmpAtomic);
+
             const sha256 = await sha256File(tmpAtomic);
             const stat = await fsp.stat(tmpAtomic);
+
             const binPath = path.join(firmwareDir, "esp32.bin");
             const manifestPath = path.join(firmwareDir, "manifest.json");
 
             await fsp.rename(tmpAtomic, binPath);
 
+            // --- BASE URL -----------------------------------------------------
             const base = resolveBaseUrl(req);
-            const url = `${base}/firmware/esp32.bin`;
-            const manifest = { version, url, sha256, size: stat.size, created_at: new Date().toISOString() };
+            const firmwareUrl = `${base}/firmware/esp32.bin`;
+
+            // --- MANIFEST COMPATIBILE CON L'ESP -------------------------------
+            const manifest = {
+                version,
+                url: firmwareUrl,
+                sha256,
+                size: stat.size,
+                created_at: new Date().toISOString()
+            };
+
             await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
 
-            await publishRetained("bonsai/ota/available", JSON.stringify(manifest));
-            try {
-                const cfgPath = path.join(uploadsDir, "config.json");
-                let cfg: ServerConfig = {};
+            // --- OTA ANNOUNCE --------------------------------------------------
+            publishRetained("bonsai/ota/available", JSON.stringify(manifest));
 
-                try {
-                    cfg = JSON.parse(await fsp.readFile(cfgPath, "utf-8"));
-                } catch {
-                    cfg = {};
-                }
-
-                cfg.latest_firmware = version;
-                cfg.latest_firmware_url = url;
-                cfg.latest_firmware_sha256 = sha256;
-                cfg.latest_firmware_size = stat.size;
-                cfg.latest_firmware_updated_at = new Date().toISOString();
-
-                await fsp.writeFile(cfgPath, JSON.stringify(cfg, null, 2), "utf-8");
-
-                console.log("[OTA] Aggiornato config.json con info firmware");
-            } catch (e) {
-                console.error("[OTA] ❌ Errore aggiornamento config.json:", e);
-            }
-            console.log(`[OTA] ✅ Upload completato: ${version}`);
+            console.log(`[OTA] Firmware aggiornato: ${version}`);
             res.json({ success: true, manifest });
+
         } catch (err: any) {
-            console.error("❌ Errore OTA:", err.message);
+            console.error("❌ Errore OTA:", err);
             res.status(500).json({ error: "Errore interno upload OTA" });
         } finally {
             uploading = false;
@@ -215,143 +307,145 @@ app.post(
     }
 );
 
-/** Config OTA (ultima versione disponibile) */
-app.get("/api/ota/config", async (_req, res) => {
+// ----------------------------------------------------------------------------
+//  CONFIG API (CONFIG GLOBALE)
+// ----------------------------------------------------------------------------
+
+app.get("/api/config", async (_req, res) => {
     try {
-        const cfgPath = path.join(uploadsDir, "config.json");
-        const data = JSON.parse(await fsp.readFile(cfgPath, "utf-8"));
+        const data = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf-8"));
         res.json(data);
+    } catch {
+        res
+            .status(404)
+            .json({ error: "config.json non trovato" });
+    }
+});
+
+app.post("/api/config", async (req, res) => {
+    try {
+        const cfg = req.body ?? {};
+
+        // Genera nuova versione config
+        const ts = new Date()
+            .toISOString()
+            .replace(/[-:.TZ]/g, "")
+            .slice(0, 14);
+
+        cfg.config_version = ts;
+
+        await fsp.writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+
+        publishRetained(
+            "bonsai/config",
+            JSON.stringify(cfg)
+        );
+
+        console.log("⚙️ Config aggiornata → nuova manifest OTA generata");
+        res.json({ ok: true, config_version: cfg.config_version });
+    } catch (err) {
+        console.error("❌ Errore aggiornamento config:", err);
+        res.status(500).json({ error: "write_failed" });
+    }
+});
+
+// Respinge config corrente tramite MQTT retained
+app.post("/api/config/push", async (_req, res) => {
+    try {
+        const data = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf-8"));
+        publishRetained("bonsai/config", JSON.stringify(data));
+        res.json({ ok: true });
     } catch {
         res.status(404).json({ error: "config.json non trovato" });
     }
 });
 
-/** Forza un update su un device specifico */
-app.post("/api/ota/update/:deviceId", (req, res) => {
-    const { deviceId } = req.params;
-    mqttClient.publish(`bonsai/${deviceId}/ota/start`, "1");
+// ----------------------------------------------------------------------------
+//  OTA MANIFEST RE-PUBLISH
+// ----------------------------------------------------------------------------
 
-    console.log(`[OTA] Update richiesto a ${deviceId}`);
-    res.json({ ok: true, deviceId });
-});
-
-// --- API PER-DEVICE ---------------------------------------------------------
-
-/** Comando pompa */
-app.post("/api/pump/:deviceId", (req, res) => {
-    const { deviceId } = req.params;
-    const action = String(req.body?.action || "").toLowerCase();
-    if (!["on", "off"].includes(action))
-        return res.status(400).json({ error: "Invalid 'action'. Use 'on' or 'off'." });
-
-    const topic = `bonsai/${deviceId}/command/pump`;
-    mqttClient.publish(topic, action.toUpperCase());
-    console.log(`💦 [${deviceId}] Pump ${action.toUpperCase()}`);
-    res.json({ ok: true, deviceId, action });
-});
-
-/** Aggiornamento config (live o mailbox) */
-app.post("/api/config/:deviceId", async (req, res) => {
-    const { deviceId } = req.params;
-    const mode = String(req.query.mode || "both").toLowerCase();
-    const cfg = req.body || {};
-
-    const doLive = mode === "live" || mode === "both";
-    const doMailbox = mode === "mailbox" || mode === "both";
-
-    if (doLive) {
-        mqttClient.publish(`bonsai/config/set/${deviceId}`, JSON.stringify(cfg), { retain: false });
-        console.log(`⚙️ [${deviceId}] Config sent (live)`);
-    }
-    if (doMailbox) {
-        mqttClient.publish(`bonsai/config/${deviceId}`, JSON.stringify(cfg), { retain: true });
-        console.log(`📬 [${deviceId}] Config sent (mailbox)`);
-    }
-
-    res.json({ ok: true, deviceId, mode });
-});
-
-/** Ripubblica OTA manifest */
-app.post("/api/ota/announce", async (_req, res) => {
+app.post("/api/ota/announce", async (req, res) => {
     try {
-        const manifest = await fsp.readFile(path.join(firmwareDir, "manifest.json"), "utf-8");
-        await publishRetained("bonsai/ota/available", manifest);
+        const base = resolveBaseUrl(req);
+        const manifest = await rebuildManifest(base);
+        publishRetained("bonsai/ota/available", JSON.stringify(manifest));
         res.json({ ok: true });
     } catch {
-        res.status(404).json({ error: "Manifest non trovato" });
+        res.status(500).json({ error: "manifest_error" });
     }
 });
 
-/** Versione firmware attuale */
+// ----------------------------------------------------------------------------
+//  FIRMWARE VERSION API
+// ----------------------------------------------------------------------------
+
 app.get("/api/firmware/version", async (_req, res) => {
     try {
-        const data = JSON.parse(await fsp.readFile(path.join(firmwareDir, "manifest.json"), "utf-8"));
-        res.json({ version: data.version, size: data.size, sha256: data.sha256, url: data.url, created_at: data.created_at });
+        const raw = JSON.parse(await fsp.readFile(MANIFEST_PATH, "utf-8"));
+        res.json(raw.firmware);
     } catch {
         res.status(404).json({ error: "Manifest non trovato" });
     }
 });
 
-// --- FRONTEND ---------------------------------------------------------------
-const staticPath = path.resolve(__dirname, "../dist-frontend");
-
-app.use(express.static(staticPath));
-
-app.get("*", (_, res) => {
-    res.sendFile(path.join(staticPath, "index.html"));
-});
-
-// --- ERROR HANDLER ----------------------------------------------------------
-
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    if (err instanceof multer.MulterError)
-        return res.status(400).json({ error: "MulterError", code: err.code });
-    res.status(500).json({ error: "Errore interno", details: (err as Error)?.message });
-});
-
-// --- DATABASE COLLECTOR ----------------------------------------------------
+// ----------------------------------------------------------------------------
+//  DATABASE API
+// ----------------------------------------------------------------------------
 
 app.get("/api/history/:deviceId", (req, res) => {
     const { deviceId } = req.params;
-
-    const stmt = db.prepare(`
-        SELECT *
-        FROM device_data
-        WHERE device_id = ?
-        ORDER BY created_at DESC
-        LIMIT 200
-    `);
-
+    const stmt = db.prepare(
+        `SELECT * FROM device_data WHERE device_id = ? ORDER BY created_at DESC LIMIT 200`
+    );
     res.json(stmt.all(deviceId));
 });
 
 app.get("/api/device/:deviceId/latest", (req, res) => {
     const { deviceId } = req.params;
-
-    const stmt = db.prepare(`
-        SELECT *
-        FROM device_data
-        WHERE device_id = ?
-        ORDER BY created_at DESC
-            LIMIT 1
-    `);
-
-    const row = stmt.get(deviceId) as DeviceLatestResponse;
-    res.json(row);
+    const stmt = db.prepare(
+        `SELECT * FROM device_data WHERE device_id = ? ORDER BY created_at DESC LIMIT 1`
+    );
+    res.json(stmt.get(deviceId));
 });
 
-app.get("/api/devices", (req, res) => {
-    const stmt = db.prepare(`
-        SELECT DISTINCT device_id
-        FROM device_data
-        ORDER BY device_id ASC
-    `);
-
-    const rows = stmt.all() as { device_id: string }[];
-
-    res.json(rows.map(r => r.device_id) as DevicesListResponse);
+app.get("/api/devices", (_req, res) => {
+    const stmt = db.prepare(
+        `SELECT DISTINCT device_id FROM device_data ORDER BY device_id ASC`
+    );
+    res.json(stmt.all().map((r: any) => r.device_id));
 });
 
-// --- STARTUP ----------------------------------------------------------------
+// ----------------------------------------------------------------------------
+//  FRONTEND
+// ----------------------------------------------------------------------------
 
-app.listen(PORT, HOST, () => console.log(`🌱 Server Bonsai pronto su http://${HOST}:${PORT}`));
+const staticPath = path.resolve(__dirname, "../dist-frontend");
+app.use(express.static(staticPath));
+
+app.get("*", (_req, res) => {
+    res.sendFile(path.join(staticPath, "index.html"));
+});
+
+// ----------------------------------------------------------------------------
+//  ERROR HANDLER
+// ----------------------------------------------------------------------------
+
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (err instanceof multer.MulterError)
+        return res.status(400).json({ error: "MulterError", code: err.code });
+
+    res.status(500).json({
+        error: "Errore interno",
+        details: (err as Error)?.message,
+    });
+});
+
+// ----------------------------------------------------------------------------
+//  STARTUP
+// ----------------------------------------------------------------------------
+
+await ensureDirectories();
+
+app.listen(PORT, HOST, () =>
+    console.log(`🌱 Server Bonsai pronto su http://${HOST}:${PORT}`)
+);
