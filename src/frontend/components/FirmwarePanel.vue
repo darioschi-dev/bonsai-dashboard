@@ -54,6 +54,7 @@
 import { computed, ref } from "vue"
 import { devicesStore } from "../store/devicesStore"
 import { serverConfig } from "../store/serverConfigStore"
+import {apiBase} from "../utils/api";
 
 // Props
 const props = defineProps<{

@@ -34,6 +34,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import {HistoryRow} from "../store/devicesStore";
+import {apiBase} from "../utils/api";
 
 const props = defineProps<{
   deviceId: string

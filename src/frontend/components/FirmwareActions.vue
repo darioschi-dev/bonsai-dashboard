@@ -32,6 +32,7 @@
 import {computed, ref} from "vue";
 import {serverConfig} from "../store/serverConfigStore";
 import {devicesStore} from "../store/devicesStore";
+import {apiBase} from "../utils/api";
 
 const props = defineProps<{ deviceId: string }>();
 

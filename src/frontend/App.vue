@@ -85,6 +85,7 @@ import { devicesStore } from "./store/devicesStore"
 import { serverConfig } from "./store/serverConfigStore"
 import FirmwareActions from "./components/FirmwareActions.vue"
 import FirmwarePanel from "./components/FirmwarePanel.vue"
+import {apiBase} from "./utils/api";
 
 const devices = devicesStore
 const activeDevice = ref<string | null>(null)
@@ -155,19 +156,23 @@ async function loadDeviceData(id: string) {
   const latest = await fetch(`${apiBase}/api/device/${id}/latest`).then(r => r.json());
   const history = await fetch(`${apiBase}/api/history/${id}`).then(r => r.json());
 
-  devices[id] = {
-    ...devices[id],
-    humidity: latest?.humidity ?? null,
-    temperature: latest?.temperature ?? null,
-    battery: latest?.battery ?? null,
-    rssi: latest?.rssi ?? null,
-    firmware: latest?.firmware ?? null,
-    lastSeen: latest?.created_at
-        ? new Date(latest.created_at).toLocaleTimeString()
-        : "--",
-    lastUpdate: latest ? new Date(latest.created_at).getTime() : null,
-    history,
-  }
+  if (!devices[id]) return;
+
+  devices[id].humidity   = latest?.humidity ?? null;
+  devices[id].temperature = latest?.temperature ?? null;
+  devices[id].battery    = latest?.battery ?? null;
+  devices[id].rssi       = latest?.rssi ?? null;
+  devices[id].firmware   = latest?.firmware ?? null;
+
+  devices[id].lastSeen = latest?.created_at
+      ? (new Date(latest.created_at)).toLocaleTimeString()
+      : "--";
+
+  devices[id].lastUpdate = latest?.created_at
+      ? (new Date(latest.created_at)).getTime()
+      : (new Date().getTime());
+
+  devices[id].history = history;
 }
 
 onMounted(async () => {
@@ -175,7 +180,17 @@ onMounted(async () => {
   const devList = await fetch("/api/devices").then(r => r.json());
 
   for (const id of devList) {
-    devices[id] = {};
+    devices[id] = {
+      humidity: null,
+      temperature: null,
+      battery: null,
+      rssi: null,
+      firmware: null,
+      lastSeen: "--",
+      lastUpdate: (new Date()).getTime(),
+      status: "offline",
+      history: [],
+    };
   }
 
   if (devList.length > 0) {
@@ -201,15 +216,29 @@ onMounted(async () => {
 
         if (!devices[id]) devices[id] = {}
 
-        devices[id].lastSeen = new Date().toLocaleTimeString()
-        devices[id].lastUpdate = Date.now()
+        // --- Gestione timestamp basata sul device, NON sul browser ---
+        if (field === "last_seen") {
+          const ms = Number(value)            // epoch millis del device
+          if (!isNaN(ms)) {
+            devices[id].lastUpdate = ms
+            devices[id].lastSeen = new Date(ms).toLocaleTimeString()
+          }
+          return
+        }
 
+        // Aggiorna anche gli altri campi
         switch (field) {
           case "humidity": devices[id].humidity = Number(value); break
           case "temp": devices[id].temperature = Number(value); break
           case "battery": devices[id].battery = Number(value); break
           case "wifi": devices[id].rssi = Number(value); break
           case "firmware": devices[id].firmware = value; break
+        }
+
+        // Per compatibilità: se manca last_seen, aggiorna comunque lastUpdate locale
+        if (!devices[id].lastUpdate) {
+          devices[id].lastUpdate = Date.now()
+          devices[id].lastSeen = new Date().toLocaleTimeString()
         }
 
         if (!activeDevice.value) activeDevice.value = id

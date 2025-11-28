@@ -13,6 +13,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import {apiBase} from "../utils/api";
 const fileInput = ref<HTMLInputElement | null>(null)
 const message = ref('')
 const deviceId = 'esp32-1'
