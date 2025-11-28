@@ -22,7 +22,7 @@ async function uploadFirmware() {
   const formData = new FormData()
   formData.append('firmware', fileInput.value.files[0])
 
-  const res = await fetch(`/api/firmware/${deviceId}`, {
+  const res = await fetch(`${apiBase}/api/firmware/${deviceId}`, {
     method: 'POST',
     body: formData
   })

@@ -37,7 +37,7 @@ const statusColor = computed(() =>
 )
 
 async function togglePump(action: 'on' | 'off') {
-  await fetch(`/api/pump/${props.deviceId}/${action}`, { method: 'POST' })
+  await fetch(`${apiBase}/api/pump/${props.deviceId}/${action}`, { method: 'POST' })
 }
 </script>
 

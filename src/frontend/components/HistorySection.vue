@@ -44,7 +44,7 @@ const loading = ref(true)
 
 async function load() {
   loading.value = true
-  const res = await fetch(`/api/history/${props.deviceId}`)
+  const res = await fetch(`${apiBase}/api/history/${props.deviceId}`)
   rows.value = await res.json()
   loading.value = false
 }

@@ -1,28 +1,26 @@
 <template>
   <div class="app">
-    <!-- HEADER SEMPRE VISIBILE -->
+    <!-- HEADER -->
     <DashboardHeader
         :online="Object.keys(devices).length > 0"
         :active-id="activeDevice"
         :device-ids="Object.keys(devices)"
         :devices="devices"
-    @toggle-pump="(s) => togglePump(activeDevice, s)"
-    @select-device="setActiveDevice"
+        @toggle-pump="(s) => togglePump(activeDevice, s)"
+        @select-device="setActiveDevice"
     />
 
-    <!-- MESSAGGIO INFORMATIVO, NON BLOCCA PIÙ LA UI -->
+    <!-- EMPTY STATE -->
     <div v-if="Object.keys(devices).length === 0" class="empty-state">
       <p>Nessun dispositivo connesso.</p>
       <p class="hint">
         In attesa di dati MQTT dal topic
-        <code>bonsai/&lt;device_id&gt;/data</code>…
+        <code>bonsai/&lt;device_id&gt;/status/#</code>…
       </p>
     </div>
 
-    <!-- DASHBOARD SEMPRE VISIBILE -->
+    <!-- DASHBOARD PRINCIPALE -->
     <div class="device-block">
-
-      <!-- GRID DELLE METRICHE SEMPRE VISIBILE -->
       <div class="status-grid">
         <DashboardCard icon="tint" label="Umidità" :value="fmt(device.humidity)" />
         <DashboardCard icon="battery-half" label="Batteria" :value="fmt(device.battery)" />
@@ -32,17 +30,11 @@
         <DashboardCard icon="microchip" label="Firmware" :value="device.firmware ?? '--'" />
       </div>
 
-      <!-- TITOLO ***
-       VA SOTTO IL GRID *** -->
       <h2 v-if="activeDevice" :style="{ color: getColor(activeDevice) }">
         <i class="fas fa-microchip"></i> {{ activeDevice }}
       </h2>
+      <h2 v-else><i class="fas fa-microchip"></i> Nessun dispositivo selezionato</h2>
 
-      <h2 v-else>
-        <i class="fas fa-microchip"></i> Nessun dispositivo selezionato
-      </h2>
-
-      <!-- GRAFICI -->
       <HumidityChart :humidity="device.humidity ?? 0" />
       <HistorySection v-if="activeDevice" :device-id="activeDevice" />
 
@@ -51,19 +43,17 @@
           :device-id="activeDevice"
           @save="(cfg) => saveConfig(activeDevice!, cfg)"
       />
+
       <FirmwarePanel :device-id="activeDevice" />
       <FirmwareActions v-if="activeDevice" :device-id="activeDevice" />
-      <div
-          v-if="firmwareUpdateAvailable"
-          class="ota-banner"
-      >
+
+      <div v-if="firmwareUpdateAvailable" class="ota-banner">
         <i class="fas fa-exclamation-triangle"></i>
         Nuovo firmware disponibile:
         <strong>{{ serverConfig.latest_firmware }}</strong>
       </div>
 
       <FirmwareUploader />
-
     </div>
 
     <ModalConfirm
@@ -93,8 +83,8 @@ import HistorySection from './components/HistorySection.vue'
 import { mqttConnect } from './utils/mqttClient'
 import { devicesStore } from "./store/devicesStore"
 import { serverConfig } from "./store/serverConfigStore"
-import FirmwareActions from "./components/FirmwareActions.vue";
-import FirmwarePanel from "./components/FirmwarePanel.vue";
+import FirmwareActions from "./components/FirmwareActions.vue"
+import FirmwarePanel from "./components/FirmwarePanel.vue"
 
 const devices = devicesStore
 const activeDevice = ref<string | null>(null)
@@ -111,12 +101,14 @@ const firmwareUpdateAvailable = computed(() => {
   const devFw = devices[activeDevice.value]?.firmware
   const latest = serverConfig.latest_firmware
   if (!devFw || !latest) return false
-
   return devFw.trim() !== latest.trim()
 })
 
-function fmt(value?: number) {
-  return value != null ? `${value}` : '--'
+const fmt = (value: number | null | undefined): string => {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return '--'
+  }
+  return value.toString()
 }
 
 function getColor(id: string) {
@@ -139,7 +131,7 @@ async function confirmSave() {
   if (!pendingConfig.value) return
   const { id, cfg } = pendingConfig.value
 
-  await fetch(`/api/config/${id}`, {
+  await fetch(`${apiBase}/api/config/${id}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
@@ -156,12 +148,12 @@ function authenticate(pin: string) {
 
 function togglePump(id: string | null, state: 'on' | 'off') {
   if (!id) return
-  fetch(`/api/pump/${id}/${state}`, { method: 'POST' })
+  fetch(`${apiBase}/api/pump/${id}/${state}`, { method: 'POST' })
 }
 
 async function loadDeviceData(id: string) {
-  const latest = await fetch(`/api/device/${id}/latest`).then(r => r.json());
-  const history = await fetch(`/api/history/${id}`).then(r => r.json());
+  const latest = await fetch(`${apiBase}/api/device/${id}/latest`).then(r => r.json());
+  const history = await fetch(`${apiBase}/api/history/${id}`).then(r => r.json());
 
   devices[id] = {
     ...devices[id],
@@ -175,60 +167,59 @@ async function loadDeviceData(id: string) {
         : "--",
     lastUpdate: latest ? new Date(latest.created_at).getTime() : null,
     history,
-  };
-
-  console.log("[INIT] Dati caricati per", id, devices[id]);
+  }
 }
 
 onMounted(async () => {
-  console.log("[INIT] Caricamento lista dispositivi dal DB...");
-
-  // 1) Carica lista device dal backend
+  // Carica lista device dal backend
   const devList = await fetch("/api/devices").then(r => r.json());
 
   for (const id of devList) {
     devices[id] = {};
   }
 
-  // se esiste almeno 1 device, selezionalo
   if (devList.length > 0) {
     activeDevice.value = devList[0];
     await loadDeviceData(devList[0]);
   }
 
-  // 2) Connessione MQTT (opzionale, realtime)
+  // MQTT LIVE
   console.log('[MQTT] Connessione al broker...')
 
   const mqtt = await mqttConnect(
       import.meta.env.VITE_MQTT_URL,
       import.meta.env.VITE_CLIENT_ID,
       (topic, message) => {
-        const match = topic.match(/^bonsai\/([^/]+)\/data$/)
+
+        // MATCH: bonsai/<device_id>/status/<field>
+        const match = topic.match(/^bonsai\/([^/]+)\/status\/([^/]+)$/)
         if (!match) return
 
         const id = match[1]
-        const data = JSON.parse(message)
+        const field = match[2]
+        const value = message
 
-        devices[id] = {
-          ...devices[id],
-          humidity: data.humidity,
-          temperature: data.temperature,
-          battery: data.battery,
-          rssi: data.rssi,
-          firmware: data.firmware,
-          lastSeen: new Date().toLocaleTimeString(),
-          lastUpdate: Date.now(),
+        if (!devices[id]) devices[id] = {}
+
+        devices[id].lastSeen = new Date().toLocaleTimeString()
+        devices[id].lastUpdate = Date.now()
+
+        switch (field) {
+          case "humidity": devices[id].humidity = Number(value); break
+          case "temp": devices[id].temperature = Number(value); break
+          case "battery": devices[id].battery = Number(value); break
+          case "wifi": devices[id].rssi = Number(value); break
+          case "firmware": devices[id].firmware = value; break
         }
 
-        // set attivo se non selezionato
         if (!activeDevice.value) activeDevice.value = id
       }
   )
 
-  mqtt.subscribe("bonsai/#")
-  console.log("[MQTT] Sottoscritto a bonsai/#")
+  mqtt.subscribe("bonsai/+/status/#")
+  console.log("[MQTT] Sottoscritto a bonsai/+/status/#")
 
-  // 3) Stato online/offline
+  // Stato online/offline
   setInterval(() => {
     const now = Date.now()
     for (const id in devices) {
@@ -239,15 +230,11 @@ onMounted(async () => {
     }
   }, 5000)
 
-  // 4) OTA config
+  // OTA config dal server
   try {
-    const res = await fetch("/api/ota/config");
-    Object.assign(serverConfig, await res.json());
-    console.log("[OTA] Config ricevuta:", serverConfig);
-  } catch (e) {
-    console.warn("Nessuna OTA config disponibile");
-  }
-
+    const res = await fetch("/api/ota/config")
+    Object.assign(serverConfig, await res.json())
+  } catch {}
 })
 </script>
 
@@ -296,12 +283,9 @@ h2 {
   gap: 15px;
   margin: 24px auto;
   max-width: 900px;
-
-  /* 3 colonne perfettamente simmetriche */
   grid-template-columns: repeat(3, 1fr);
 }
 
-/* responsive mobile/tablet */
 @media (max-width: 800px) {
   .status-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -323,5 +307,4 @@ h2 {
   max-width: 500px;
   font-weight: 600;
 }
-
 </style>

@@ -150,36 +150,59 @@ const mqttClient = mqtt.connect(MQTT_URL);
 
 mqttClient.on("connect", () => {
     console.log("📡 MQTT connected");
-    mqttClient.subscribe("bonsai/+/data");
+    mqttClient.subscribe("bonsai/+/status/#");
+    mqttClient.subscribe("bonsai/status/#");
+
+    console.log("📡 MQTT subscribed to bonsai/+/status/#");
 });
 
-mqttClient.on("message", (topic, payload) => {
-    try {
-        const match = topic.match(/^bonsai\/([^/]+)\/data$/);
-        if (!match) return;
+mqttClient.on("message", (topic, payloadBuffer) => {
+    const payload = payloadBuffer.toString();
 
-        const deviceId = match[1];
-        const data = JSON.parse(payload.toString());
+    const match = topic.match(/^bonsai\/([^/]+)\/status\/([^/]+)$/);
+    if (!match) return;
 
-        const stmt = db.prepare(`
-            INSERT INTO device_data (device_id, humidity, temperature, battery, rssi, firmware, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        `);
+    const deviceId = match[1];
+    const field    = match[2];
 
-        stmt.run(
-            deviceId,
-            data.humidity ?? null,
-            data.temperature ?? null,
-            data.battery ?? null,
-            data.rssi ?? null,
-            data.firmware ?? null,
-            new Date().toISOString()
-        );
+    const stmt = db.prepare(
+        `INSERT INTO device_data 
+         (device_id, humidity, temperature, battery, rssi, firmware, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
 
-        console.log("💾 [DB] Inserito nuovo dato da", deviceId);
-    } catch (e) {
-        console.error("[DB] Errore parsing MQTT:", e);
+    // Lettura campo singolo
+    const value = payload;
+
+    const record: any = {
+        humidity: null,
+        temperature: null,
+        battery: null,
+        rssi: null,
+        firmware: null
+    };
+
+    switch (field) {
+        case "humidity":   record.humidity   = Number(value); break;
+        case "temp":       record.temperature = Number(value); break;
+        case "battery":    record.battery    = Number(value); break;
+        case "wifi":       record.rssi       = Number(value); break;
+        case "firmware":   record.firmware   = value; break;
+        default:
+            return;
     }
+
+    stmt.run(
+        deviceId,
+        record.humidity,
+        record.temperature,
+        record.battery,
+        record.rssi,
+        record.firmware,
+        new Date().toISOString()
+    );
+
+    console.log("💾 [DB] Inserito", deviceId, field, value);
 });
 
 function publishRetained(topic: string, payload: string) {

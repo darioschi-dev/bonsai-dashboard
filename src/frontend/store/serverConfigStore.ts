@@ -1,11 +1,15 @@
-import { reactive } from "vue"
+import { reactive } from "vue";
 
 export interface ServerConfig {
-    latest_firmware?: string
-    latest_firmware_url?: string
-    latest_firmware_sha256?: string
-    latest_firmware_size?: number
-    latest_firmware_updated_at?: string
+    // Estratti dal manifest OTA
+    latest_firmware?: string;            // firmware.version
+    latest_firmware_url?: string;        // firmware.url
+    latest_firmware_sha256?: string;     // firmware.sha256
+    latest_firmware_size?: number;       // firmware.size
+    latest_firmware_created_at?: string; // firmware.created_at
+
+    // Versione di configurazione globale (opzionale)
+    config_version?: string;
 }
 
-export const serverConfig = reactive<ServerConfig>({})
+export const serverConfig = reactive<ServerConfig>({});

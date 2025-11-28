@@ -92,7 +92,7 @@ async function startUpdate() {
   updating.value = true
 
   try {
-    const res = await fetch(`/api/ota/update/${props.deviceId}`, {
+    const res = await fetch(`${apiBase}/api/ota/update/${props.deviceId}`, {
       method: "POST"
     })
 

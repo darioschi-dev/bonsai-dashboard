@@ -48,7 +48,7 @@ const updateAvailable = computed(() =>
 
 async function forceUpdate() {
   msg.value = "Invio richiesta aggiornamento...";
-  const res = await fetch(`/api/ota/update/${props.deviceId}`, { method: "POST" });
+  const res = await fetch(`${apiBase}/api/ota/update/${props.deviceId}`, { method: "POST" });
   msg.value = res.ok ? "Aggiornamento avviato!" : "Errore aggiornamento";
 }
 </script>

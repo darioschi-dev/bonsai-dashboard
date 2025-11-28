@@ -15,7 +15,11 @@
 <script setup lang="ts">
 import {computed} from "vue";
 
-const props = defineProps<{ icon: string; label: string; value: string | number }>()
+const props =defineProps<{
+  icon: string,
+  label: string,
+  value: string | number | null | undefined
+}>()
 
 // Mostra '--' in modo coerente
 const displayValue = computed(() =>
