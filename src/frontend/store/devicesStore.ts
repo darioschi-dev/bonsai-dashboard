@@ -33,7 +33,7 @@ export interface DeviceInfo {
     lastSeen?: string;
 
     /** ms (Date.now) dell’ultimo aggiornamento */
-    lastUpdate?: number;
+    lastUpdate?: number | null;
 
     /** Calcolato dal poller interno */
     status?: "online" | "offline";

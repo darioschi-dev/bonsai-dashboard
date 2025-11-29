@@ -187,7 +187,7 @@ onMounted(async () => {
       rssi: null,
       firmware: null,
       lastSeen: "--",
-      lastUpdate: (new Date()).getTime(),
+      lastUpdate: null,
       status: "offline",
       history: [],
     };
@@ -216,26 +216,25 @@ onMounted(async () => {
 
         if (!devices[id]) devices[id] = {}
 
-        // --- Gestione timestamp basata sul device, NON sul browser ---
         if (field === "last_seen") {
-          const ms = Number(value)            // epoch millis del device
+          const ms = Number(value)
           if (!isNaN(ms)) {
             devices[id].lastUpdate = ms
             devices[id].lastSeen = new Date(ms).toLocaleTimeString()
           }
-          return
+
+          // NON fare return qui → lascia che passi sotto
+        } else {
+          switch (field) {
+            case "humidity": devices[id].humidity = Number(value); break
+            case "temp": devices[id].temperature = Number(value); break
+            case "battery": devices[id].battery = Number(value); break
+            case "wifi": devices[id].rssi = Number(value); break
+            case "firmware": devices[id].firmware = value; break
+          }
         }
 
-        // Aggiorna anche gli altri campi
-        switch (field) {
-          case "humidity": devices[id].humidity = Number(value); break
-          case "temp": devices[id].temperature = Number(value); break
-          case "battery": devices[id].battery = Number(value); break
-          case "wifi": devices[id].rssi = Number(value); break
-          case "firmware": devices[id].firmware = value; break
-        }
-
-        // Per compatibilità: se manca last_seen, aggiorna comunque lastUpdate locale
+        // ⚡ sempre aggiorniamo lastUpdate se non esiste
         if (!devices[id].lastUpdate) {
           devices[id].lastUpdate = Date.now()
           devices[id].lastSeen = new Date().toLocaleTimeString()
@@ -252,8 +251,14 @@ onMounted(async () => {
   setInterval(() => {
     const now = Date.now()
     for (const id in devices) {
+
+      if (!devices[id].lastUpdate || (devices[id].lastUpdate === undefined)) {
+        devices[id].status = "offline"
+        continue
+      }
+
       devices[id].status =
-          devices[id].lastUpdate && now - devices[id].lastUpdate > 60000
+          ((now - devices[id].lastUpdate) > 60000)
               ? "offline"
               : "online"
     }
