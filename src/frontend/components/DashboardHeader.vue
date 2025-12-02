@@ -3,9 +3,9 @@
     <h1>
       <i class="fas fa-seedling"></i>
       Bonsai MQTT Dashboard
-      <span :class="['badge', online ? 'online' : 'offline']">
-        {{ online ? 'Online' : 'Offline' }}
-      </span>
+      <span :class="['badge', activeStatus === 'online' ? 'online' : 'offline']">
+  {{ activeStatus === 'online' ? 'ONLINE' : 'OFFLINE' }}
+</span>
     </h1>
 
     <!-- Tabs dinamiche per ogni device -->
@@ -13,10 +13,23 @@
       <button
           v-for="id in deviceIds"
           :key="id"
-          :class="['tab', id === activeId ? 'active' : '']"
+          :class="[
+  'tab',
+  id === activeId ? 'active' : '',
+  devices[id]?.status === 'online' ? 'tab-online' : 'tab-offline'
+]"
           @click="$emit('select-device', id)"
       >
         <i class="fas fa-microchip"></i> {{ id }}
+
+        <span
+            :class="[
+    'dev-status',
+    devices[id]?.status === 'online' ? 'online' : 'offline'
+  ]"
+        >
+  {{ devices[id]?.status === 'online' ? 'ON' : 'OFF' }}
+</span>
 
         <span
             v-if="devices[id]?.firmware && serverConfig.latest_firmware &&
@@ -44,7 +57,7 @@ import { serverConfig } from "../store/serverConfigStore"
 import {DeviceInfo} from "../store/devicesStore";
 
 defineProps<{
-  online: boolean;
+  activeStatus: string;   // "online" | "offline"
   deviceIds: string[];
   activeId: string | null;
   devices: Record<string, DeviceInfo>;
@@ -80,16 +93,6 @@ h1 {
   margin-left: 8px;
 }
 
-.badge.online {
-  background: #28a745;
-  color: #fff;
-}
-
-.badge.offline {
-  background: #a00;
-  color: #fff;
-}
-
 /* Tabs */
 .tabs {
   display: flex;
@@ -105,10 +108,6 @@ h1 {
   color: #ccc;
   padding: 6px 12px;
   cursor: pointer;
-}
-.tab.active {
-  background: #2ecc71;
-  color: #fff;
 }
 
 /* Controls */
@@ -143,6 +142,14 @@ button {
   color: white;
   margin-left: 6px;
   padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: bold;
+}
+
+.dev-status {
+  margin-left: 6px;
+  padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.7rem;
   font-weight: bold;

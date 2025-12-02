@@ -1,6 +1,6 @@
 // ============================================================================
 //  Bonsai MQTT Dashboard – Server backend (OTA + MQTT + storage + config)
-//  VERSIONE FINALE, COMPLETA E COERENTE
+//  VERSIONE DEFINITIVA — Firmware unico, config per-device
 // ============================================================================
 
 import express, { Request, Response, NextFunction } from "express";
@@ -13,7 +13,6 @@ import crypto from "crypto";
 import mqtt from "mqtt";
 import { fileURLToPath } from "url";
 import db from "./db.js";
-import {ServerConfig} from "./types/ServerConfig";
 
 // ----------------------------------------------------------------------------
 //  ENV
@@ -34,7 +33,7 @@ const OTA_TOKEN = process.env.OTA_TOKEN || "";
 const UPDATE_HOST = (process.env.UPDATE_HOST || "bonsai-iot-update.darioschiavano.it").toLowerCase();
 
 // ----------------------------------------------------------------------------
-//  DIRECTORIES (modello A)
+//  DIRECTORIES
 // ----------------------------------------------------------------------------
 
 const uploadsDir = path.resolve(__dirname, "..", "uploads");
@@ -48,7 +47,10 @@ async function ensureDirectories() {
     await fsp.mkdir(tmpDir, { recursive: true });
 }
 
-const CONFIG_PATH = path.join(configDir, "config.json");
+function getConfigPath(deviceId: string) {
+    return path.join(configDir, `${deviceId}.json`);
+}
+
 const MANIFEST_PATH = path.join(firmwareDir, "manifest.json");
 
 // ----------------------------------------------------------------------------
@@ -78,28 +80,21 @@ async function sha256File(filePath: string): Promise<string> {
     });
 }
 
+// ----------------------------------------------------------------------------
+//  MANIFEST OTA (solo firmware, nessuna config!)
+// ----------------------------------------------------------------------------
+
 async function buildFullManifest(baseUrl: string) {
-    // ---- CONFIG ----
-    let cfg: any = {};
-    try {
-        cfg = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf8"));
-    } catch {
-        cfg = { config_version: "000000000000" };
-    }
 
-    const configJson = JSON.stringify(cfg);
-    const configSha = crypto.createHash("sha256").update(configJson).digest("hex");
-
-    // ---- FIRMWARE ----
-    let firmwareSection = null;
     const binPath = path.join(firmwareDir, "esp32.bin");
+    let firmwareSection: any;
 
     try {
         const stat = await fsp.stat(binPath);
         const sha = await sha256File(binPath);
 
         firmwareSection = {
-            version: cfg.firmware_version ?? "v0.0.0",
+            version: process.env.FIRMWARE_VERSION || "v0.0.0",
             url: `${baseUrl}/firmware/esp32.bin`,
             sha256: sha,
             size: stat.size,
@@ -115,30 +110,17 @@ async function buildFullManifest(baseUrl: string) {
         };
     }
 
-    // ---- CONFIG SECTION ----
-    const configSection = {
-        version: cfg.config_version ?? "000000000000",
-        url: `${baseUrl}/config/config.json`,
-        sha256: configSha,
-        size: Buffer.byteLength(configJson),
-        created_at: new Date().toISOString(),
-    };
-
-    // ---- SERVER SECTION ----
-    const serverSection = {
-        node: process.version,
-        timestamp: new Date().toISOString(),
-        pm_id: process.env.pm_id ?? null,
-    };
-
     const manifest = {
-        server: serverSection,
+        server: {
+            node: process.version,
+            timestamp: new Date().toISOString(),
+            pm_id: process.env.pm_id ?? null,
+        },
         firmware: firmwareSection,
-        config: configSection,
+        // ⚠️ NESSUNA CONFIG QUI
     };
 
     await fsp.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
-
     return manifest;
 }
 
@@ -152,8 +134,6 @@ mqttClient.on("connect", () => {
     console.log("📡 MQTT connected");
     mqttClient.subscribe("bonsai/+/status/#");
     mqttClient.subscribe("bonsai/status/#");
-
-    console.log("📡 MQTT subscribed to bonsai/+/status/#");
 });
 
 mqttClient.on("message", (topic, payloadBuffer) => {
@@ -171,7 +151,6 @@ mqttClient.on("message", (topic, payloadBuffer) => {
          VALUES (?, ?, ?, ?, ?, ?, ?)`
     );
 
-    // Lettura campo singolo
     const value = payload;
 
     const record: any = {
@@ -223,10 +202,10 @@ app.use(express.json());
 app.use(
     "/firmware",
     express.static(firmwareDir, {
-        setHeaders: (res, filePath) => {
-            if (filePath.endsWith("manifest.json"))
+        setHeaders: (res, fp) => {
+            if (fp.endsWith("manifest.json"))
                 res.setHeader("Cache-Control", "no-store");
-            if (filePath.endsWith(".bin"))
+            if (fp.endsWith(".bin"))
                 res.setHeader("Cache-Control", "no-cache");
         },
     })
@@ -234,7 +213,10 @@ app.use(
 
 app.use("/config", express.static(configDir));
 
-// BLOCK routes if request comes from UPDATE_HOST
+// ----------------------------------------------------------------------------
+//  BLOCK routes from UPDATE_HOST
+// ----------------------------------------------------------------------------
+
 app.use((req, res, next) => {
     const rawHost =
         (req.headers["x-forwarded-host"] as string) ||
@@ -256,55 +238,36 @@ app.use((req, res, next) => {
 });
 
 // ----------------------------------------------------------------------------
-//   DEBUG – BUILD INFORMATION
-//
+//  DEBUG INFO
 // ----------------------------------------------------------------------------
+
 app.get("/debug/build", async (_req, res) => {
     try {
-        // Versione Node
-        const nodeVersion = process.version;
-
-        // Tempo di avvio server (PM2)
-        const uptimeSec = process.uptime();
-
-        // Timestamp build (iniettato da Vite/TS durante build)
-        // Se vuoi un vero timestamp, sostituisco con uno generato in fase build.
-        const buildTs = process.env.BUILD_TIMESTAMP || "unknown";
-
-        // Leggi manifest (se esiste)
         let manifest = null;
         try {
             const raw = await fsp.readFile(MANIFEST_PATH, "utf8");
             manifest = JSON.parse(raw);
-        } catch (_) {
-            manifest = null;
-        }
-
-        // Informazioni PM2 (se disponibili)
-        const pm_id = process.env.pm_id || null;
-        const pm2_env = process.env.pm2_env || null;
+        } catch {}
 
         res.json({
             ok: true,
             server: {
-                node: nodeVersion,
-                uptime_seconds: Math.round(uptimeSec),
-                pm_id,
-                pm2_env
+                node: process.version,
+                uptime_seconds: Math.round(process.uptime()),
+                pm_id: process.env.pm_id ?? null,
             },
             build: {
-                timestamp: buildTs
+                timestamp: process.env.BUILD_TIMESTAMP || "unknown"
             },
             manifest
         });
     } catch (err) {
-        console.error("DEBUG ERROR:", err);
         res.status(500).json({ ok: false, error: "debug_failed" });
     }
 });
 
 // ----------------------------------------------------------------------------
-//  OTA UPLOAD (FIRMWARE)
+//  OTA UPLOAD (solo firmware)
 // ----------------------------------------------------------------------------
 
 let uploading = false;
@@ -313,10 +276,8 @@ const upload = multer({
     dest: tmpDir,
     limits: { fileSize: 4 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
-        if (
-            file.fieldname !== "firmware" &&
-            file.fieldname !== "version_file"
-        ) {
+        if (file.fieldname !== "firmware" &&
+            file.fieldname !== "version_file") {
             return cb(new multer.MulterError("LIMIT_UNEXPECTED_FILE"));
         }
         cb(null, true);
@@ -327,28 +288,28 @@ app.post(
     "/upload-firmware",
     upload.fields([{ name: "firmware", maxCount: 1 }, { name: "version_file", maxCount: 1 }]),
     async (req: Request, res: Response) => {
+
         if (uploading) return res.status(409).json({ error: "Upload già in corso" });
         uploading = true;
 
         try {
-            // --- Auth ---------------------------------------------------------
+            // --- Auth ---
             if (OTA_TOKEN) {
                 const auth = (req.headers.authorization || "").trim();
                 if (!auth.startsWith("Bearer ") || auth.slice(7) !== OTA_TOKEN)
                     return res.status(401).json({ error: "Unauthorized" });
             }
 
-            // --- File firmware ------------------------------------------------
+            // --- File firmware ---
             const fw = (req.files as any)?.firmware?.[0];
             if (!fw) return res.status(400).json({ error: "File mancante (campo 'firmware')" });
 
-            // --- Version extraction -------------------------------------------
+            // --- Version extraction ---
             let version = "";
             const versionFile = (req.files as any)?.version_file?.[0];
             if (versionFile) version = (await fsp.readFile(versionFile.path, "utf-8")).trim();
             if (!version) version = (req.body?.version || "").toString().trim();
 
-            // Validazione
             const reSemver = /^v\d+\.\d+\.\d+$/;
             const reTs = /^\d{12}$/;
             const reComb = /^v\d+\.\d+\.\d+\+\d{12}$/;
@@ -357,42 +318,26 @@ app.post(
                 return res.status(400).json({ error: "Version non valida" });
 
             if (version.length > 31)
-                return res.status(400).json({ error: "Version troppo lunga (max 31)" });
+                return res.status(400).json({ error: "Version troppo lunga" });
 
-            // --- Aggiorna config.json con la nuova versione firmware ---
-            try {
-                let cfg: ServerConfig = {};
-                try {
-                    cfg = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf8"));
-                } catch {}
-
-                cfg.firmware_version = version;
-
-                await fsp.writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2));
-            } catch (err) {
-                console.error("❌ Errore aggiornando firmware_version in config:", err);
-            }
-
-            // --- Atomic move & SHA -------------------------------------------
+            // --- Sposta atomicamente il firmware ---
             const tmpAtomic = path.join(firmwareDir, ".esp32.bin.tmp");
             await fsp.rename(fw.path, tmpAtomic);
 
             const binPath = path.join(firmwareDir, "esp32.bin");
-
             await fsp.rename(tmpAtomic, binPath);
-            // --- BASE URL -----------------------------------------------------
-            const base = resolveBaseUrl(req);
 
-            // --- RICOSTRUISCI MANIFEST COMPLETO ---
+            // --- Ricostruisci manifest ---
+            const base = resolveBaseUrl(req);
+            process.env.FIRMWARE_VERSION = version;
             const manifest = await buildFullManifest(base);
 
-            // --- OTA ANNOUNCE --------------------------------------------------
             publishRetained("bonsai/ota/available", JSON.stringify(manifest));
 
             console.log(`[OTA] Firmware aggiornato: ${version}`);
             res.json({ success: true, manifest });
 
-        } catch (err: any) {
+        } catch (err) {
             console.error("❌ Errore OTA:", err);
             res.status(500).json({ error: "Errore interno upload OTA" });
         } finally {
@@ -402,56 +347,31 @@ app.post(
 );
 
 // ----------------------------------------------------------------------------
-//  CONFIG API (CONFIG GLOBALE)
+//  CONFIG PER-DEVICE
 // ----------------------------------------------------------------------------
 
-app.get("/api/config", async (_req, res) => {
+app.get("/api/device/:deviceId/config", async (req, res) => {
+    const file = getConfigPath(req.params.deviceId);
     try {
-        const data = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf-8"));
+        const data = JSON.parse(await fsp.readFile(file, "utf8"));
         res.json(data);
     } catch {
-        res
-            .status(404)
-            .json({ error: "config.json non trovato" });
+        res.json({});
     }
 });
 
-app.post("/api/config", async (req, res) => {
-    try {
-        const cfg = req.body ?? {};
+app.post("/api/device/:deviceId/config", async (req, res) => {
+    const file = getConfigPath(req.params.deviceId);
+    const cfg = req.body ?? {};
 
-        // Genera nuova versione config
-        const ts = new Date()
-            .toISOString()
-            .replace(/[-:.TZ]/g, "")
-            .slice(0, 14);
+    cfg.config_version = new Date()
+        .toISOString()
+        .replace(/[-:.TZ]/g, "")
+        .slice(0, 14);
 
-        cfg.config_version = ts;
+    await fsp.writeFile(file, JSON.stringify(cfg, null, 2));
 
-        await fsp.writeFile(CONFIG_PATH, JSON.stringify(cfg, null, 2));
-
-        publishRetained("bonsai/config", JSON.stringify(cfg));
-
-        const base = resolveBaseUrl(req);
-        await buildFullManifest(base);
-
-        console.log("⚙️ Config aggiornata → manifest OTA rigenerato");
-        res.json({ ok: true, config_version: cfg.config_version });
-    } catch (err) {
-        console.error("❌ Errore aggiornamento config:", err);
-        res.status(500).json({ error: "write_failed" });
-    }
-});
-
-// Respinge config corrente tramite MQTT retained
-app.post("/api/config/push", async (_req, res) => {
-    try {
-        const data = JSON.parse(await fsp.readFile(CONFIG_PATH, "utf-8"));
-        publishRetained("bonsai/config", JSON.stringify(data));
-        res.json({ ok: true });
-    } catch {
-        res.status(404).json({ error: "config.json non trovato" });
-    }
+    res.json({ ok: true, config_version: cfg.config_version });
 });
 
 // ----------------------------------------------------------------------------
@@ -464,14 +384,13 @@ app.post("/api/ota/announce", async (req, res) => {
         const manifest = await buildFullManifest(base);
         publishRetained("bonsai/ota/available", JSON.stringify(manifest));
         res.json({ ok: true });
-    } catch (err) {
-        console.error("❌ OTA announce error:", err);
+    } catch {
         res.status(500).json({ error: "manifest_error" });
     }
 });
 
 // ----------------------------------------------------------------------------
-//  FIRMWARE VERSION API
+//  FIRMWARE VERSION
 // ----------------------------------------------------------------------------
 
 app.get("/api/firmware/version", async (_req, res) => {
@@ -488,24 +407,30 @@ app.get("/api/firmware/version", async (_req, res) => {
 // ----------------------------------------------------------------------------
 
 app.get("/api/history/:deviceId", (req, res) => {
-    const { deviceId } = req.params;
     const stmt = db.prepare(
-        `SELECT * FROM device_data WHERE device_id = ? ORDER BY created_at DESC LIMIT 200`
+        `SELECT * FROM device_data 
+         WHERE device_id = ? 
+         ORDER BY created_at DESC 
+         LIMIT 200`
     );
-    res.json(stmt.all(deviceId));
+    res.json(stmt.all(req.params.deviceId));
 });
 
 app.get("/api/device/:deviceId/latest", (req, res) => {
-    const { deviceId } = req.params;
     const stmt = db.prepare(
-        `SELECT * FROM device_data WHERE device_id = ? ORDER BY created_at DESC LIMIT 1`
+        `SELECT * FROM device_data 
+         WHERE device_id = ? 
+         ORDER BY created_at DESC 
+         LIMIT 1`
     );
-    res.json(stmt.get(deviceId));
+    res.json(stmt.get(req.params.deviceId));
 });
 
 app.get("/api/devices", (_req, res) => {
     const stmt = db.prepare(
-        `SELECT DISTINCT device_id FROM device_data ORDER BY device_id ASC`
+        `SELECT DISTINCT device_id
+         FROM device_data
+         ORDER BY device_id ASC`
     );
     res.json(stmt.all().map((r: any) => r.device_id));
 });

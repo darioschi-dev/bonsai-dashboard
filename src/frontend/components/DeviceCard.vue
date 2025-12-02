@@ -25,6 +25,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import {devicesStore} from "../store/devicesStore";
+import {apiBase} from "../utils/api";
 
 const props = defineProps<{ deviceId: string }>()
 

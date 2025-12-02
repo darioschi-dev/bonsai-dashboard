@@ -2,7 +2,7 @@
   <div class="app">
     <!-- HEADER -->
     <DashboardHeader
-        :online="Object.keys(devices).length > 0"
+        :active-status="activeStatus"
         :active-id="activeDevice"
         :device-ids="Object.keys(devices)"
         :devices="devices"
@@ -97,6 +97,12 @@ const device = computed(() =>
     activeDevice.value ? devices[activeDevice.value] ?? {} : {}
 )
 
+const activeStatus = computed(() => {
+  if (!activeDevice.value) return "offline";
+  return devices[activeDevice.value]?.status ?? "offline";
+});
+
+
 const firmwareUpdateAvailable = computed(() => {
   if (!activeDevice.value) return false
   const devFw = devices[activeDevice.value]?.firmware
@@ -153,24 +159,47 @@ function togglePump(id: string | null, state: 'on' | 'off') {
 }
 
 async function loadDeviceData(id: string) {
-  const latest = await fetch(`${apiBase}/api/device/${id}/latest`).then(r => r.json());
-  const history = await fetch(`${apiBase}/api/history/${id}`).then(r => r.json());
+  let latest = null;
+  let history = [];
 
-  if (!devices[id]) return;
+  // ---- LATEST ----
+  try {
+    const res = await fetch(`${apiBase}/api/device/${id}/latest`);
+    if (res.ok) latest = await res.json();
+    else latest = null;
+  } catch (e) {
+    console.warn("[API] latest fallback for", id, e);
+    latest = null;
+  }
 
-  devices[id].humidity   = latest?.humidity ?? null;
+  // ---- HISTORY ----
+  try {
+    const res = await fetch(`${apiBase}/api/history/${id}`);
+    if (res.ok) history = await res.json();
+    else history = [];
+  } catch (e) {
+    console.warn("[API] history fallback for", id, e);
+    history = [];
+  }
+
+
+  // ---- NO DEVICE ENTRY YET ----
+  if (!devices[id]) devices[id] = {};
+
+  // ---- UPDATE FIELDS ----
+  devices[id].humidity    = latest?.humidity ?? null;
   devices[id].temperature = latest?.temperature ?? null;
-  devices[id].battery    = latest?.battery ?? null;
-  devices[id].rssi       = latest?.rssi ?? null;
-  devices[id].firmware   = latest?.firmware ?? null;
+  devices[id].battery     = latest?.battery ?? null;
+  devices[id].rssi        = latest?.rssi ?? null;
+  devices[id].firmware    = latest?.firmware ?? null;
 
   devices[id].lastSeen = latest?.created_at
-      ? (new Date(latest.created_at)).toLocaleTimeString()
+      ? new Date(latest.created_at).toLocaleString()
       : "--";
 
   devices[id].lastUpdate = latest?.created_at
-      ? (new Date(latest.created_at)).getTime()
-      : (new Date().getTime());
+      ? new Date(latest.created_at).getTime()
+      : null;
 
   devices[id].history = history;
 }
@@ -220,7 +249,7 @@ onMounted(async () => {
           const ms = Number(value)
           if (!isNaN(ms)) {
             devices[id].lastUpdate = ms
-            devices[id].lastSeen = new Date(ms).toLocaleTimeString()
+            devices[id].lastSeen = new Date(ms).toLocaleString()
           }
 
           // NON fare return qui → lascia che passi sotto
@@ -237,7 +266,7 @@ onMounted(async () => {
         // ⚡ sempre aggiorniamo lastUpdate se non esiste
         if (!devices[id].lastUpdate) {
           devices[id].lastUpdate = Date.now()
-          devices[id].lastSeen = new Date().toLocaleTimeString()
+          devices[id].lastSeen = new Date().toLocaleString()
         }
 
         if (!activeDevice.value) activeDevice.value = id
@@ -251,6 +280,9 @@ onMounted(async () => {
   setInterval(() => {
     const now = Date.now()
     for (const id in devices) {
+
+      console.log('[MQTT] Stato device', id, devices[id].status, '->')
+      console.log("[MQTT]   lastUpdate:", devices[id].lastUpdate, "now:", now)
 
       if (!devices[id].lastUpdate || (devices[id].lastUpdate === undefined)) {
         devices[id].status = "offline"

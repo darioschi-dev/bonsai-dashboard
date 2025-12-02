@@ -30,7 +30,7 @@
 
       <div class="row" v-if="serverConfig.latest_firmware">
         <span class="label">Pubblicato il</span>
-        <span class="value">{{ formatDate(serverConfig.latest_firmware_updated_at) }}</span>
+        <span class="value">{{ formatDate(serverConfig.latest_firmware_created_at) }}</span>
       </div>
 
       <p v-if="needsUpdate" class="warn">
